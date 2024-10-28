@@ -1,0 +1,96 @@
+import os
+import importlib.util
+from prometheus_client import start_http_server, Gauge, Counter
+from functools import lru_cache
+import redis
+import re
+
+# Inicializa métricas Prometheus
+cache_hits = Counter('cache_hits', 'Número de hits no cache')
+cache_misses = Counter('cache_misses', 'Número de misses no cache')
+cache_size = Gauge('cache_size', 'Tamanho atual do cache')
+
+# Define função para monitorar lru_cache
+def monitor_lru_cache(func):
+    @lru_cache(maxsize=100)
+    def wrapper(*args, **kwargs):
+        result = func(*args, **kwargs)
+        cache_info = wrapper.cache_info()
+        cache_hits.inc(cache_info.hits)
+        cache_misses.inc(cache_info.misses)
+        cache_size.set(cache_info.currsize)
+        return result
+    return wrapper
+
+# Define função para monitorar Redis
+def monitor_redis_cache():
+    try:
+        r = redis.StrictRedis(host='localhost', port=6379, db=0)
+        cache_size.set(r.dbsize())  # Número de chaves no cache Redis
+        print("Conectado ao Redis. Número de itens no cache:", r.dbsize())
+    except Exception as e:
+        print("Erro ao conectar com Redis:", e)
+
+# Função para monitorar Memcached (caso esteja em uso)
+def monitor_memcached_cache():
+    try:
+        from pymemcache.client import base
+        client = base.Client(('localhost', 11211))
+        stats = client.stats()
+        cache_hits.inc(int(stats.get('get_hits', 0)))
+        cache_misses.inc(int(stats.get('get_misses', 0)))
+        cache_size.set(int(stats.get('curr_items', 0)))
+        print("Conectado ao Memcached. Número de itens no cache:", stats.get('curr_items'))
+    except Exception as e:
+        print("Erro ao conectar com Memcached:", e)
+
+# Função para monitorar cachetools (caches personalizados em memória)
+def monitor_cachetools_cache():
+    try:
+        from cachetools import LRUCache
+        cache = LRUCache(maxsize=100)
+        cache['example'] = 'value'  # Teste para garantir que o cache está funcionando
+        cache_size.set(len(cache))
+        print("Cachetools LRUCache: Número de itens no cache:", len(cache))
+    except Exception as e:
+        print("Erro ao monitorar cachetools:", e)
+
+# Função para identificar e monitorar caches no código-fonte
+def find_and_monitor_caches(directory):
+    for root, _, files in os.walk(directory):
+        for file in files:
+            if file.endswith('.py'):
+                file_path = os.path.join(root, file)
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                    # Detecta uso de lru_cache
+                    if '@lru_cache' in content:
+                        print(f"Função lru_cache detectada em {file_path}")
+                    # Detecta uso de Redis
+                    if 'redis.StrictRedis' in content or 'redis.Redis' in content:
+                        print(f"Uso de Redis detectado em {file_path}")
+                        monitor_redis_cache()
+                    # Detecta uso de Memcached
+                    if 'pymemcache' in content:
+                        print(f"Uso de Memcached detectado em {file_path}")
+                        monitor_memcached_cache()
+                    # Detecta uso de cachetools
+                    if 'cachetools' in content:
+                        print(f"Uso de cachetools detectado em {file_path}")
+                        monitor_cachetools_cache()
+
+# Função principal
+if __name__ == "__main__":
+    # Defina o diretório do projeto onde estão os arquivos de cache
+    project_directory = "./tweety"
+    
+    # Carrega e monitora caches detectados
+    find_and_monitor_caches(project_directory)
+    
+    # Inicia o servidor Prometheus para expor métricas em http://localhost:8000/metrics
+    start_http_server(8000)
+    print("Servidor Prometheus iniciado em http://localhost:8000/metrics")
+    
+    # Executa indefinidamente para permitir coleta de métricas em tempo real
+    while True:
+        pass
